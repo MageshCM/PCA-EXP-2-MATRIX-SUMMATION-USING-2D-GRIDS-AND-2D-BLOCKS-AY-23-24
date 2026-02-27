@@ -1,6 +1,6 @@
 # PCA-EXP-2-Matrix-Summation-using-2D-Grids-and-2D-Blocks-AY-23-24
 
-<h3>AIM:</h3>
+
 <h3>Magesh C M</h3>
 <h3>212223220053</h3>
 <h3>EX. NO 2</h3>
