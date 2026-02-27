@@ -43,7 +43,6 @@ Google Colab with NVCC Compiler
 #include <sys/time.h>
 #include <string.h>
 #include <stdbool.h>
-
 #ifndef _COMMON_H
 #define _COMMON_H
 
@@ -59,40 +58,111 @@ Google Colab with NVCC Compiler
     }                                                                          \
 }
 
+#define CHECK_CUBLAS(call)                                                     \
+{                                                                              \
+    cublasStatus_t err;                                                        \
+    if ((err = (call)) != CUBLAS_STATUS_SUCCESS)                               \
+    {                                                                          \
+        fprintf(stderr, "Got CUBLAS error %d at %s:%d\n", err, __FILE__,       \
+                __LINE__);                                                     \
+        exit(1);                                                               \
+    }                                                                          \
+}
+
+#define CHECK_CURAND(call)                                                     \
+{                                                                              \
+    curandStatus_t err;                                                        \
+    if ((err = (call)) != CURAND_STATUS_SUCCESS)                               \
+    {                                                                          \
+        fprintf(stderr, "Got CURAND error %d at %s:%d\n", err, __FILE__,       \
+                __LINE__);                                                     \
+        exit(1);                                                               \
+    }                                                                          \
+}
+
+#define CHECK_CUFFT(call)                                                      \
+{                                                                              \
+    cufftResult err;                                                           \
+    if ( (err = (call)) != CUFFT_SUCCESS)                                      \
+    {                                                                          \
+        fprintf(stderr, "Got CUFFT error %d at %s:%d\n", err, __FILE__,        \
+                __LINE__);                                                     \
+        exit(1);                                                               \
+    }                                                                          \
+}
+
+#define CHECK_CUSPARSE(call)                                                   \
+{                                                                              \
+    cusparseStatus_t err;                                                      \
+    if ((err = (call)) != CUSPARSE_STATUS_SUCCESS)                             \
+    {                                                                          \
+        fprintf(stderr, "Got error %d at %s:%d\n", err, __FILE__, __LINE__);   \
+        cudaError_t cuda_err = cudaGetLastError();                             \
+        if (cuda_err != cudaSuccess)                                           \
+        {                                                                      \
+            fprintf(stderr, "  CUDA error \"%s\" also detected\n",             \
+                    cudaGetErrorString(cuda_err));                             \
+        }                                                                      \
+        exit(1);                                                               \
+    }                                                                          \
+}
+
 inline double seconds()
 {
     struct timeval tp;
-    gettimeofday(&tp, NULL);
+    struct timezone tzp;
+    int i = gettimeofday(&tp, &tzp);
     return ((double)tp.tv_sec + (double)tp.tv_usec * 1.e-6);
 }
 
 #endif // _COMMON_H
-
 void initialData(float *ip, const int size)
 {
-    for(int i = 0; i < size; i++)
+    int i;
+
+    for(i = 0; i < size; i++)
+    {
         ip[i] = (float)(rand() & 0xFF) / 10.0f;
+    }
+
+    return;
 }
 
-void sumMatrixOnHost(float *A, float *B, float *C, const int nx, const int ny)
+void sumMatrixOnHost(float *A, float *B, float *C, const int nx,
+                     const int ny)
 {
+    float *ia = A;
+    float *ib = B;
+    float *ic = C;
+
     for (int iy = 0; iy < ny; iy++)
+    {
         for (int ix = 0; ix < nx; ix++)
-            C[iy * nx + ix] = A[iy * nx + ix] + B[iy * nx + ix];
+        {
+            ic[ix] = ia[ix] + ib[ix];
+
+        }
+
+        ia += nx;
+        ib += nx;
+        ic += nx;
+    }
+
+    return;
 }
+
 
 void checkResult(float *hostRef, float *gpuRef, const int N)
 {
     double epsilon = 1.0E-8;
-    bool match = true;
+    bool match = 1;
 
     for (int i = 0; i < N; i++)
     {
         if (abs(hostRef[i] - gpuRef[i]) > epsilon)
         {
-            match = false;
-            printf("Mismatch at %d: host %f gpu %f\n",
-                   i, hostRef[i], gpuRef[i]);
+            match = 0;
+            printf("host %f gpu %f\n", hostRef[i], gpuRef[i]);
             break;
         }
     }
@@ -103,9 +173,12 @@ void checkResult(float *hostRef, float *gpuRef, const int N)
         printf("Arrays do not match.\n\n");
 }
 
-/* -------------------------------------------------
-   CUDA KERNEL: 2D Grid + 2D Block Matrix Addition
-   ------------------------------------------------- */
+// grid 2D block 2D
+
+//-----------------------------------------------
+// Write your device function here
+//-------------------------------------------------
+
 __global__ void sumMatrixOnGPU2D(float *A, float *B, float *C, int NX, int NY)
 {
     unsigned int ix = blockIdx.x * blockDim.x + threadIdx.x;
@@ -118,89 +191,109 @@ __global__ void sumMatrixOnGPU2D(float *A, float *B, float *C, int NX, int NY)
     }
 }
 
+
 int main(int argc, char **argv)
 {
     printf("%s Starting...\n", argv[0]);
 
+    // set up device
     int dev = 0;
     cudaDeviceProp deviceProp;
     CHECK(cudaGetDeviceProperties(&deviceProp, dev));
-    CHECK(cudaSetDevice(dev));
     printf("Using Device %d: %s\n", dev, deviceProp.name);
+    CHECK(cudaSetDevice(dev));
 
-    /* SAFE SIZE FOR COLAB / LAB GPU */
-    int nx = 1 << 10;
-    int ny = 1 << 10;
+    // set up data size of matrix
+    int nx = 1 << 14;
+    int ny = 1 << 14;
 
     int nxy = nx * ny;
     int nBytes = nxy * sizeof(float);
     printf("Matrix size: nx %d ny %d\n", nx, ny);
 
-    float *h_A = (float *)malloc(nBytes);
-    float *h_B = (float *)malloc(nBytes);
-    float *hostRef = (float *)malloc(nBytes);
-    float *gpuRef = (float *)malloc(nBytes);
+    // malloc host memory
+    float *h_A, *h_B, *hostRef, *gpuRef;
+    h_A = (float *)malloc(nBytes);
+    h_B = (float *)malloc(nBytes);
+    hostRef = (float *)malloc(nBytes);
+    gpuRef = (float *)malloc(nBytes);
 
+    // initialize data at host side
     double iStart = seconds();
     initialData(h_A, nxy);
     initialData(h_B, nxy);
-    printf("Matrix initialization elapsed %f sec\n",
-           seconds() - iStart);
+    double iElaps = seconds() - iStart;
+    printf("Matrix initialization elapsed %f sec\n", iElaps);
 
     memset(hostRef, 0, nBytes);
     memset(gpuRef, 0, nBytes);
 
+    // add matrix at host side for result checks
     iStart = seconds();
     sumMatrixOnHost(h_A, h_B, hostRef, nx, ny);
-    printf("sumMatrixOnHost elapsed %f sec\n",
-           seconds() - iStart);
+    iElaps = seconds() - iStart;
+    printf("sumMatrixOnHost elapsed %f sec\n", iElaps);
 
+    // malloc device global memory
     float *d_MatA, *d_MatB, *d_MatC;
     CHECK(cudaMalloc((void **)&d_MatA, nBytes));
     CHECK(cudaMalloc((void **)&d_MatB, nBytes));
     CHECK(cudaMalloc((void **)&d_MatC, nBytes));
 
+    // transfer data from host to device
     CHECK(cudaMemcpy(d_MatA, h_A, nBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_MatB, h_B, nBytes, cudaMemcpyHostToDevice));
 
-    dim3 block(32, 32);
-    dim3 grid((nx + block.x - 1) / block.x,
-              (ny + block.y - 1) / block.y);
+    // invoke kernel at host side
+    int dimx = 32;
+    int dimy = 32;
+    dim3 block(dimx, dimy);
+    dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
 
     iStart = seconds();
+    
     sumMatrixOnGPU2D<<<grid, block>>>(d_MatA, d_MatB, d_MatC, nx, ny);
     CHECK(cudaDeviceSynchronize());
-    printf("sumMatrixOnGPU2D <<<(%d,%d), (%d,%d)>>> elapsed %f sec\n",
-           grid.x, grid.y, block.x, block.y,
-           seconds() - iStart);
+    iElaps = seconds() - iStart;
+    printf("sumMatrixOnGPU2D <<<(%d,%d), (%d,%d)>>> elapsed %f sec\n", grid.x,
+           grid.y,
+           block.x, block.y, iElaps);
+    // check kernel error
+    CHECK(cudaGetLastError());
 
+    // copy kernel result back to host side
     CHECK(cudaMemcpy(gpuRef, d_MatC, nBytes, cudaMemcpyDeviceToHost));
 
+    // check device results
     checkResult(hostRef, gpuRef, nxy);
 
-    cudaFree(d_MatA);
-    cudaFree(d_MatB);
-    cudaFree(d_MatC);
+    // free device global memory
+    CHECK(cudaFree(d_MatA));
+    CHECK(cudaFree(d_MatB));
+    CHECK(cudaFree(d_MatC));
 
+    // free host memory
     free(h_A);
     free(h_B);
     free(hostRef);
     free(gpuRef);
 
-    cudaDeviceReset();
-    return 0;
+    // reset device
+    CHECK(cudaDeviceReset());
+
+    return (0);
 }
 ```
 ## OUTPUT:
 ```
-/tmp/tmpp3lvl1cp/ebe2dcb8-1352-4e15-9947-56c3cb62487d/cuda_exec.out Starting...
+/tmp/tmpp3lvl1cp/4a0a0749-9e09-498c-ac28-534fbbfcd50f/cuda_exec.out Starting...
 Using Device 0: Tesla T4
-Matrix size: nx 1024 ny 1024
-Matrix initialization elapsed 0.050202 sec
-sumMatrixOnHost elapsed 0.005921 sec
-sumMatrixOnGPU2D <<<(32,32), (32,32)>>> elapsed 0.019516 sec
+Matrix size: nx 16384 ny 16384
+Matrix initialization elapsed 10.898443 sec
+sumMatrixOnHost elapsed 0.815829 sec
+sumMatrixOnGPU2D <<<(512,512), (32,32)>>> elapsed 0.013705 sec
 Arrays match.
 ```
 
 ## RESULT:
-The host took 0.005921 seconds to complete its computation, while the GPU completes the computation in 0.019516 seconds. Therefore, float variables in the GPU will result in the best possible result. Thus, matrix summation using 2D grids and 2D blocks has been performed successfully.
+The host took 0.815829 seconds to complete its computation, while the GPU completed the computation in 0.013705 seconds. Hence, the GPU significantly outperforms the host for large matrix sizes. Therefore, using float variables on the GPU provides efficient and accurate computation. Thus, matrix summation using 2D grids and 2D blocks has been performed successfully.
